@@ -1,0 +1,30 @@
+name: Build PrivetDNS Connect
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - name: Arch resolver tests
+        working-directory: linux
+        run: python3 -m unittest test_install.py test_splitdns.py
+      - name: Build and test
+        run: bash build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: privetdns-connect
+          path: |
+            dist/PrivetDNS-Connect-Windows-x64.exe
+            dist/PrivetDNS-Connect-Arch-x64.zip

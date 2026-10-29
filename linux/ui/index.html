@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101820">
+  <title>PrivetDNS Connect</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 4v28M4 18h28M8 8l20 20M28 8 8 28" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/><circle cx="18" cy="18" r="5" fill="currentColor"/></svg></span><span>privet<b>dns</b><small>connect</small></span></div>
+      <span class="platform">LINUX · ARCH</span>
+    </header>
+
+    <section class="hero">
+      <div class="hero-content">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> Персональное подключение</div>
+        <h1>Нужные домены.<br><span>Ваше подключение.</span></h1>
+        <p>Вставьте личное имя DoT из карточки Linux-устройства. Выбранные сервисы будут работать через PrivetDNS, остальные сайты продолжат использовать DNS вашей сети.</p>
+      </div>
+      <div class="diagram" aria-hidden="true"><div class="diagram-device"><svg viewBox="0 0 48 48" fill="none"><rect x="11" y="5" width="26" height="38" rx="6" stroke="currentColor" stroke-width="2"/><path d="M20 36h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><div class="diagram-line"><span></span></div><div class="diagram-core">✳</div><div class="diagram-copy"><strong>Smart DNS</strong><small>Только выбранные домены</small></div></div>
+    </section>
+
+    <section class="control-card" aria-labelledby="connect-title">
+      <div class="control-head"><div><span class="section-kicker">01 / ПОДКЛЮЧЕНИЕ</span><h2 id="connect-title">PrivetDNS для Arch</h2></div><span id="status" class="status loading" role="status">Проверяем…</span></div>
+      <form id="connect-form">
+        <label for="hostname">Личное имя DoT</label>
+        <div class="input-wrap"><input id="hostname" name="hostname" type="password" autocomplete="off" spellcheck="false" placeholder="…dot.privetdns.ru" required><button id="reveal" type="button" aria-label="Показать имя">Показать</button></div>
+        <div class="form-actions"><button id="connect" class="button primary" type="submit">Подключить <span aria-hidden="true">↗</span></button><button id="remove" class="button quiet" type="button">Отключить и восстановить DNS</button></div>
+      </form>
+      <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+      <div class="control-foot"><span class="foot-icon">✓</span><p>Настройки сети меняются только после проверки сервиса. При ошибке программа запускает восстановление прежнего DNS.</p></div>
+    </section>
+
+    <div class="bottom"><a href="https://privetdns.ru/cabinet" target="_blank" rel="noopener noreferrer">Где взять имя DoT? <span aria-hidden="true">↗</span></a><span>PrivetDNS Connect · 0.1</span></div>
+  </main>
+</body>
+</html>

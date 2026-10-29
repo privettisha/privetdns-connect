@@ -1,0 +1,6 @@
+/dist/
+/windows/setup/payload/
+/windows/setup/rsrc_windows.syso
+*.test
+__pycache__/
+*.pyc
