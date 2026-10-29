@@ -6,7 +6,7 @@
 
 ## Скачать
 
-Откройте [последний выпуск](https://github.com/privettisha/privetdns-connect/releases/latest):
+Откройте [проверочный выпуск v0.1.0](https://github.com/privettisha/privetdns-connect/releases/tag/v0.1.0):
 
 - Windows 10/11 x64: `PrivetDNS-Connect-Windows-x64.exe`. Запустите, разрешите UAC, вставьте личную **DoH-ссылку** и нажмите «Подключить». Python и PowerShell не нужны. Тот же EXE отключает PrivetDNS.
 - Arch Linux x64: `PrivetDNS-Connect-Arch-x64.zip`. Распакуйте и выполните `sudo ./PrivetDNS-Connect`. В открывшемся окне браузера вставьте личное **имя DoT** и нажмите «Подключить». Arch использует встроенный в систему Python 3 для системной настройки; ничего через pip не устанавливается.
