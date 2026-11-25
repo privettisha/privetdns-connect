@@ -1,0 +1,40 @@
+name: Предложить улучшение
+description: Новая возможность или улучшение PrivetDNS Connect
+title: "[Идея]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую проблему решит улучшение
+      description: Опишите текущий сценарий без личной DoH-ссылки и DoT-ключа.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Как должно работать
+      description: Опишите ожидаемое поведение пользователя.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Платформа
+      options:
+        - Windows 10/11
+        - Arch Linux
+        - Обе платформы
+        - Не относится к платформе
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Перед отправкой
+      options:
+        - label: Я проверил открытые issues и не нашёл такого предложения.
+          required: true
+        - label: В описании нет личных DNS-адресов и данных кабинета.
+          required: true
