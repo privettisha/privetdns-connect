@@ -1,0 +1,61 @@
+name: Сообщить об ошибке
+description: Проблема с установкой, подключением или восстановлением DNS
+title: "[Ошибка]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуйте личную DoH-ссылку, имя DoT с ключом или данные кабинета PrivetDNS.
+  - type: input
+    id: version
+    attributes:
+      label: Версия PrivetDNS Connect
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Операционная система
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - Arch Linux x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Где возникла ошибка
+      options:
+        - Установка
+        - Подключение
+        - Проверка DNS
+        - Отключение и восстановление
+        - Запуск после перезагрузки
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло
+      description: Укажите ожидаемое поведение, результат и точный текст ошибки без личного адреса DNS.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Перед отправкой
+      options:
+        - label: Я проверил последнюю версию в Releases.
+          required: true
+        - label: Я удалил личную DoH-ссылку, DoT-ключ и данные кабинета.
+          required: true
