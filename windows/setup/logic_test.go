@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestValidatePersonalURL(t *testing.T) {
 	good := "https://dns.privetdns.ru/dns-query/device/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno"
@@ -27,6 +29,35 @@ func TestNormalizeServers(t *testing.T) {
 	observed := normalizeAdapterServers([]string{"127.0.0.1", "::1"}, 4)
 	if len(observed) != 1 || observed[0] != "127.0.0.1" {
 		t.Fatalf("live loopback DNS was discarded: %#v", observed)
+	}
+}
+
+func TestSnapshotInstalledLoopbackDNS(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		family  int
+	}{{"127.0.0.1", 4}, {"::1", 6}} {
+		state, err := snapshotDNSFamily(tc.address, []string{tc.address}, tc.family, true)
+		if err != nil || !isOurLoopback(state, tc.address) {
+			t.Fatalf("installed IPv%d DNS cannot be removed: %#v %v", tc.family, state, err)
+		}
+		if len(normalizeServers(state.Servers, tc.family)) != 0 {
+			t.Fatal("loopback must not become an upstream resolver")
+		}
+	}
+}
+
+func TestSnapshotPreservesCustomDNSAndRejectsInvalidSettings(t *testing.T) {
+	state, err := snapshotDNSFamily("127.0.0.1, 192.168.1.1", nil, 4, true)
+	if err != nil || len(state.Servers) != 2 || isOurLoopback(state, "127.0.0.1") {
+		t.Fatalf("mixed third-party DNS must not be treated as ours: %#v %v", state, err)
+	}
+	if _, err := snapshotDNSFamily("broken", nil, 4, true); err == nil {
+		t.Fatal("invalid static settings silently accepted")
+	}
+	state, err = snapshotDNSFamily("", []string{"192.168.1.1"}, 4, true)
+	if err != nil || state.Mode != "automatic" || state.Servers[0] != "192.168.1.1" {
+		t.Fatal("automatic settings changed")
 	}
 }
 

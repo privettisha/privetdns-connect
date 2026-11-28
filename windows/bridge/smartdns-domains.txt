@@ -149,6 +149,7 @@ euro.com.pl
 evike.com
 eyyo.xyz
 f00.esfr.pl
+fallguys.com
 files-s2pb.pbsync.com
 files.manuscdn.com
 fitbit-pa.googleapis.com
@@ -158,6 +159,7 @@ flow.google
 flow.google.com
 flowmusic.app
 fmhy.net
+content.googleapis.com
 formula1.com
 framer.com
 freakhosting.com
@@ -169,6 +171,7 @@ gamestop.com
 geller-pa.googleapis.com
 gemini.google
 gemini.google.com
+gemini.gstatic.com
 geminiweb-pa.clients.google.com
 geminiweb-pa.clients6.google.com
 generativeai.google
@@ -188,6 +191,7 @@ ikea.com
 images.contentstack.io
 images.workoscdn.com
 img.modivo.cloud
+lh3.googleusercontent.com
 inceptionlabs.ai
 indeed.com
 intel.com
@@ -225,6 +229,7 @@ manybooks.net
 marketplace.cursorapi.com
 mediaexpert.pl
 mediamarkt.pl
+mediatonic.com
 meta.ai
 microcenter.com
 microchip.com
@@ -302,6 +307,12 @@ singlekey-id.com
 sketchup.com
 slack.com
 slackb.com
+accounts.spotify.com
+apresolve.spotify.com
+dealer.spotify.com
+login5.spotify.com
+open.spotify.com
+spclient.wg.spotify.com
 spotify.com
 spotify.dev
 squareup.com
@@ -428,6 +439,7 @@ dashboard.heroku.com
 dashboard.railway.app
 dashboard.render.com
 discord.com
+discord.gg
 discordapp.com
 disneyplus.com
 dropbox.com
@@ -459,6 +471,12 @@ mistral.ai
 monday.com
 netflix.com
 netlify.com
+nflxext.com
+nflximg.com
+nflximg.net
+nflxsearch.net
+nflxso.net
+nflxvideo.net
 nintendo.com
 openaiapi-site.azureedge.net
 paddle.com
@@ -477,6 +495,7 @@ roblox.com
 runwayml.com
 signal.org
 soundcloud.com
+sndcdn.com
 stackblitz.com
 stability.ai
 stripe.com
@@ -490,6 +509,7 @@ trello.com
 twitch.tv
 ubisoft.com
 udio.com
+generators.ai.unity.com
 vercel.app
 vercel.com
 vimeo.com
@@ -504,4 +524,22 @@ api.nintendo.com
 api.roblox.com
 api.riotgames.com
 api.ubisoft.com
+ubi.com
+clientservices.googleapis.com
+privacy.xboxlive.com
 api.xbox.com
+brawlstars.com
+brawlstarsgame.com
+supercell.com
+supercell.net
+supercellgames.com
+supercellid.com
+accounts.activision.com
+profile.callofduty.com
+my.callofduty.com
+www.activision.com
+www.callofduty.com
+cod-assets.cdn.callofduty.com
+gemini.app.google
+alkalimakersuiteapplets.pa.clients6.google.com
+cloudconsole-pa.clients6.google.com

@@ -3,13 +3,11 @@
 package main
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,13 +30,17 @@ var bridgePayload []byte
 var domainsPayload []byte
 
 const (
-	taskName       = "PrivetDNS-Windows-Bridge"
-	installDirName = "PrivetDNS-Windows-Bridge"
-	setupVersion   = "0.1.0"
-	stateName      = "state.json"
-	configName     = "config.json"
-	runtimeName    = "privetdns-bridge.exe"
-	domainsName    = "smartdns-domains.txt"
+	taskName            = "PrivetDNS-Windows-Bridge"
+	installDirName      = "PrivetDNS-Windows-Bridge"
+	setupVersion        = "3.1.2"
+	stateName           = "state.json"
+	configName          = "config.json"
+	runtimeName         = "privetdns-bridge.exe"
+	domainsName         = "smartdns-domains.txt"
+	legacyNativeDirName = "PrivetDNS-Native"
+	legacyStubDirName   = "PrivetDNS-Personal-LocalStub"
+	legacyStubTaskName  = "PrivetDNS-Personal-LocalStub"
+	legacyNativeServer  = "31.76.244.138"
 )
 
 const nrptRegistryRoot = `SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig`
@@ -81,6 +83,27 @@ type powerShellSavedState struct {
 	Schema        int                    `json:"Schema"`
 	Adapter       powerShellAdapterState `json:"Adapter"`
 	TaskArguments string                 `json:"TaskArguments"`
+}
+
+type legacyNativeSavedState struct {
+	Schema  int    `json:"Schema"`
+	Server  string `json:"Server"`
+	Adapter struct {
+		GUID    string   `json:"Guid"`
+		Mode    string   `json:"Mode"`
+		Servers []string `json:"Servers"`
+	} `json:"Adapter"`
+}
+
+type legacyStubSavedState struct {
+	Schema  int `json:"Schema"`
+	Adapter struct {
+		GUID        string   `json:"Guid"`
+		IPv4Mode    string   `json:"IPv4Mode"`
+		IPv4Servers []string `json:"IPv4Servers"`
+	} `json:"Adapter"`
+	Python        string `json:"Python"`
+	TaskArguments string `json:"TaskArguments"`
 }
 
 func convertPowerShellState(data []byte, runtimeFile, configFile string) (savedState, error) {
@@ -144,13 +167,15 @@ func runHidden(name string, args ...string) (string, error) {
 	return runHiddenLimit(1200, name, args...)
 }
 
-func taskExists() bool {
-	_, err := runHidden("schtasks.exe", "/Query", "/TN", taskName)
+func taskExistsNamed(name string) bool {
+	_, err := runHidden("schtasks.exe", "/Query", "/TN", name)
 	return err == nil
 }
 
-func readTask() (*taskXML, error) {
-	output, err := runHiddenLimit(256*1024, "schtasks.exe", "/Query", "/TN", taskName, "/XML")
+func taskExists() bool { return taskExistsNamed(taskName) }
+
+func readTaskNamed(name string) (*taskXML, error) {
+	output, err := runHiddenLimit(256*1024, "schtasks.exe", "/Query", "/TN", name, "/XML")
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +187,19 @@ func readTask() (*taskXML, error) {
 		return nil, errors.New("не удалось проверить системную задачу PrivetDNS")
 	}
 	return &task, nil
+}
+
+func readTask() (*taskXML, error) { return readTaskNamed(taskName) }
+
+func deleteTaskNamed(name string) error {
+	if !taskExistsNamed(name) {
+		return nil
+	}
+	_, _ = runHidden("schtasks.exe", "/End", "/TN", name)
+	if _, err := runHidden("schtasks.exe", "/Delete", "/TN", name, "/F"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func adapters() ([]adapterInfo, error) {
@@ -280,46 +318,15 @@ func snapshot(info adapterInfo) (adapterState, error) {
 		return adapterState{}, fmt.Errorf("не удалось прочитать настройки IPv6 DNS: %w", err)
 	}
 	state := adapterState{GUID: info.GUID, Name: info.Name, IfIndex: info.IfIndex, IPv6Enabled: info.IPv6Enabled}
-	state.IPv4 = dnsFamilyState{Mode: "automatic", Servers: info.DNSv4}
-	state.IPv6 = dnsFamilyState{Mode: "automatic", Servers: info.DNSv6}
-	if static4 != "" {
-		state.IPv4.Mode = "static"
-		state.IPv4.Servers = normalizeServers(splitServers(static4), 4)
-		if len(state.IPv4.Servers) == 0 {
-			return adapterState{}, errors.New("статический IPv4 DNS настроен некорректно")
-		}
+	state.IPv4, err = snapshotDNSFamily(static4, info.DNSv4, 4, true)
+	if err != nil {
+		return adapterState{}, err
 	}
-	if static6 != "" {
-		state.IPv6.Mode = "static"
-		state.IPv6.Servers = normalizeServers(splitServers(static6), 6)
-		if len(state.IPv6.Servers) == 0 && info.IPv6Enabled {
-			return adapterState{}, errors.New("статический IPv6 DNS настроен некорректно")
-		}
+	state.IPv6, err = snapshotDNSFamily(static6, info.DNSv6, 6, info.IPv6Enabled)
+	if err != nil {
+		return adapterState{}, err
 	}
 	return state, nil
-}
-
-func splitServers(value string) []string {
-	return strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' })
-}
-
-func hasNRPTPolicy() bool {
-	paths := []string{
-		`SOFTWARE\Policies\Microsoft\Windows NT\DNSClient\DnsPolicyConfig`,
-		`SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig`,
-	}
-	for _, path := range paths {
-		key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.ENUMERATE_SUB_KEYS|registry.WOW64_64KEY)
-		if err != nil {
-			continue
-		}
-		names, _ := key.ReadSubKeyNames(1)
-		key.Close()
-		if len(names) != 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func plannedNRPTRules(domains []string) []string {
@@ -432,10 +439,112 @@ func deleteNRPTRules(rules []string) error {
 	return nil
 }
 
+// A failed or interrupted installation can leave NRPT rules and a service but
+// lose state.json. Only recover rules whose names and values match our own
+// schema-4 policy; never guess the original adapter DNS of older installers.
+func orphanedNRPTRules() ([]string, error) {
+	root, err := registry.OpenKey(registry.LOCAL_MACHINE, nrptRegistryRoot,
+		registry.ENUMERATE_SUB_KEYS|registry.WOW64_64KEY)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("не удалось проверить правила DNS Windows: %w", err)
+	}
+	defer root.Close()
+	names, err := root.ReadSubKeyNames(0)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось прочитать правила DNS Windows: %w", err)
+	}
+	rules := make([]string, 0)
+	for _, name := range names {
+		if strings.HasPrefix(name, "PrivetDNS-") {
+			if !validNRPTRuleName(name) {
+				return nil, errors.New("найдено неизвестное правило PrivetDNS; восстановление остановлено")
+			}
+			rules = append(rules, name)
+		}
+	}
+	if len(rules) > 2000 {
+		return nil, errors.New("слишком много правил PrivetDNS; восстановление остановлено")
+	}
+	if len(rules) != 0 {
+		if err := validateInstalledNRPTRules(rules); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
+}
+
+func recoverOrphanedInstall(dir, stateFile, configFile, runtimeFile string) (bool, error) {
+	if isReparse(dir) || isReparse(stateFile) || isReparse(configFile) || isReparse(runtimeFile) {
+		return false, errors.New("папка PrivetDNS была подменена; восстановление остановлено")
+	}
+	if taskExists() {
+		return false, errors.New("найдена старая задача PrivetDNS без файла восстановления; настройки DNS не изменены")
+	}
+	rules, err := orphanedNRPTRules()
+	if err != nil {
+		return false, err
+	}
+	serviceFound, err := servicePresent()
+	if err != nil {
+		return false, fmt.Errorf("не удалось проверить службу PrivetDNS: %w", err)
+	}
+	if serviceFound {
+		baseArgs := []string{"--service", "--config", configFile, "--port", "53"}
+		matches, matchErr := serviceMatches(runtimeFile, baseArgs)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if !matches {
+			matches, matchErr = serviceMatches(runtimeFile, append(baseArgs, "--ipv6"))
+		}
+		if matchErr != nil || !matches {
+			return false, errors.New("служба PrivetDNS была изменена; восстановление остановлено")
+		}
+	}
+	// A pre-v3 installation may have changed an adapter DNS, even if NRPT
+	// rules happen to exist. Never guess its original DNS without saved state.
+	items, err := adapters()
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		if item.IfType != windows.IF_TYPE_ETHERNET_CSMACD && item.IfType != windows.IF_TYPE_IEEE80211 {
+			continue
+		}
+		for _, server := range append(item.DNSv4, item.DNSv6...) {
+			if server == "127.0.0.1" || server == "::1" {
+				return false, errors.New("старый DNS указывает на локальный адрес; без файла восстановления удаление остановлено")
+			}
+		}
+	}
+	if len(rules) != 0 {
+		if err := deleteNRPTRules(rules); err != nil {
+			return false, err
+		}
+	}
+	if serviceFound {
+		if err := stopDeleteService(); err != nil {
+			return false, fmt.Errorf("правила DNS удалены, но службу удалить не удалось: %w", err)
+		}
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		if err := archiveLegacyDirectory(dir); err != nil {
+			return false, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	} else if len(rules) == 0 && !serviceFound {
+		return false, nil
+	}
+	return true, nil
+}
+
 func refreshDNSPolicy() {
-	// The DNS Client reloads local NRPT policy on PARAMCHANGE. Some Windows
-	// builds return an error despite applying it, so the cache flush remains the
-	// authoritative follow-up and installation is verified with a real lookup.
+	// Ask the DNS Client to reload the newly written rules and clear its cache.
+	// This does not test any external service or make installation depend on it.
 	_, _ = runHidden("sc.exe", "control", "Dnscache", "paramchange")
 	flushDNS()
 }
@@ -473,29 +582,6 @@ func writeExclusive(path string, data []byte) error {
 		return writeErr
 	}
 	return closeErr
-}
-
-func checkPorts(ipv6 bool) error {
-	targets := []struct{ network, address string }{{"tcp4", "127.0.0.1:53"}, {"udp4", "127.0.0.1:53"}}
-	if ipv6 {
-		targets = append(targets, struct{ network, address string }{"tcp6", "[::1]:53"}, struct{ network, address string }{"udp6", "[::1]:53"})
-	}
-	for _, target := range targets {
-		if strings.HasPrefix(target.network, "tcp") {
-			listener, err := net.Listen(target.network, target.address)
-			if err != nil {
-				return errors.New("локальный DNS-порт 53 уже занят другой программой")
-			}
-			listener.Close()
-		} else {
-			packet, err := net.ListenPacket(target.network, target.address)
-			if err != nil {
-				return errors.New("локальный DNS-порт 53 уже занят другой программой")
-			}
-			packet.Close()
-		}
-	}
-	return nil
 }
 
 func setDNS(name string, ipv6 bool, family dnsFamilyState) error {
@@ -567,34 +653,6 @@ func setLoopbackForAdapter(adapter adapterState, ipv6 bool) error {
 	return nil
 }
 
-func waitForLoopbackDNS(guid string, requireIPv6 bool) error {
-	var last error
-	for attempt := 0; attempt < 30; attempt++ {
-		info, err := adapterByGUID(guid)
-		if err != nil {
-			last = err
-		} else if loopbackDNSApplied(info.DNSv4, info.DNSv6, requireIPv6) {
-			return nil
-		} else if !isOnlyDNS(info.DNSv4, "127.0.0.1") {
-			last = errors.New("Windows не применила локальный IPv4 DNS")
-		} else if requireIPv6 && !isOnlyDNS(info.DNSv6, "::1") {
-			last = errors.New("Windows не применила локальный IPv6 DNS")
-		}
-		// Several Windows 11 NIC drivers expose a stale DNS list through
-		// GetAdaptersAddresses after accepting the setting.  The Windows DNS
-		// Client is the authoritative consumer: if a real system lookup already
-		// reaches PrivetDNS, do not roll back a working installation.
-		if attempt%3 == 0 {
-			flushDNS()
-			if dnsInstallVerified(false, probeSystemBridge() == nil) {
-				return nil
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return last
-}
-
 func waitForRestoredDNS(saved adapterState) error {
 	var last error
 	for attempt := 0; attempt < 30; attempt++ {
@@ -618,67 +676,171 @@ func waitForRestoredDNS(saved adapterState) error {
 	return last
 }
 
-func probeBridge() error {
-	resolver := &net.Resolver{PreferGo: true, StrictErrors: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		dialer := net.Dialer{Timeout: 3 * time.Second}
-		return dialer.DialContext(ctx, "udp4", "127.0.0.1:53")
-	}}
-	return probeResolver(resolver)
-}
-
-func probeSystemBridge() error {
-	// On Windows net.DefaultResolver uses the Windows DNS Client API. This
-	// verifies what browsers and desktop applications actually receive.
-	return probeResolver(net.DefaultResolver)
-}
-
-func probeResolver(resolver *net.Resolver) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
-	if _, err := resolver.LookupHost(ctx, "example.org"); err != nil {
-		return errors.New("локальный DNS не разрешает обычные сайты")
-	}
-	addresses, err := resolver.LookupHost(ctx, "gemini.google.com")
-	if err != nil {
-		return errors.New("персональный DNS не отвечает для Gemini")
-	}
-	for _, address := range addresses {
-		if address == "31.76.244.138" || address == "31.76.30.138" {
-			return nil
-		}
-	}
-	return errors.New("Gemini не получил рабочий адрес PrivetDNS")
-}
-
-func waitForBridge() error {
-	var last error
-	for attempt := 0; attempt < 12; attempt++ {
-		if err := probeBridge(); err == nil {
-			return nil
-		} else {
-			last = err
-		}
-		time.Sleep(1500 * time.Millisecond)
-	}
-	return last
-}
-
-func waitForSystemBridge() error {
-	var last error
-	for attempt := 0; attempt < 15; attempt++ {
-		refreshDNSPolicy()
-		if err := probeSystemBridge(); err == nil {
-			return nil
-		} else {
-			last = err
-		}
-		time.Sleep(time.Second)
-	}
-	return last
-}
-
 func flushDNS() {
 	_, _ = runHidden("ipconfig.exe", "/flushdns")
+}
+
+func validLegacyPythonPath(path string) bool {
+	if path != strings.TrimSpace(path) || !filepath.IsAbs(path) {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(path))
+	return name == "python.exe" || name == "python3.exe"
+}
+
+func archiveLegacyDirectory(dir string) error {
+	if isReparse(dir) {
+		return errors.New("папка старой версии PrivetDNS была подменена; автоматическая миграция остановлена")
+	}
+	base := dir + "-migrated-" + time.Now().Format("20060102-150405")
+	destination := base
+	for suffix := 1; ; suffix++ {
+		if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		destination = base + "-" + strconv.Itoa(suffix)
+	}
+	if err := os.Rename(dir, destination); err != nil {
+		return fmt.Errorf("не удалось убрать файлы старой версии PrivetDNS: %w", err)
+	}
+	return nil
+}
+
+func restoreLegacyIPv4(guid string, family dnsFamilyState, ownedAddress string) error {
+	info, err := adapterByGUID(guid)
+	if err != nil {
+		return err
+	}
+	current, err := snapshot(info)
+	if err != nil {
+		return err
+	}
+	if isOnlyDNS(info.DNSv4, ownedAddress) {
+		current.GUID, current.Name, current.IfIndex = info.GUID, info.Name, info.IfIndex
+		if err := setDNSForAdapter(current, false, family); err != nil {
+			return fmt.Errorf("не удалось восстановить IPv4 DNS старой версии: %w", err)
+		}
+		flushDNS()
+		return nil
+	}
+	if !sameFamily(current.IPv4, family) {
+		return errors.New("IPv4 DNS изменён после старой установки PrivetDNS; автоматическая миграция остановлена")
+	}
+	return nil
+}
+
+func resetStaleLegacyIPv4(ownedAddress string) error {
+	info, err := bestPhysicalAdapter()
+	if err != nil {
+		return err
+	}
+	if !isOnlyDNS(info.DNSv4, ownedAddress) {
+		return nil
+	}
+	adapter := adapterState{GUID: info.GUID, Name: info.Name, IfIndex: info.IfIndex}
+	if err := setDNSForAdapter(adapter, false, dnsFamilyState{Mode: "automatic"}); err != nil {
+		return fmt.Errorf("не удалось убрать незавершённую настройку старой версии PrivetDNS: %w", err)
+	}
+	flushDNS()
+	return nil
+}
+
+func migrateLegacyNative(dir string) error {
+	stateFile := filepath.Join(dir, stateName)
+	data, err := os.ReadFile(stateFile)
+	if err != nil || len(data) == 0 || len(data) > 64*1024 {
+		// A directory without a recovery file is only a stale installation marker.
+		// Keep it as an archive rather than deleting unknown recovery data.
+		if err := resetStaleLegacyIPv4(legacyNativeServer); err != nil {
+			return err
+		}
+		return archiveLegacyDirectory(dir)
+	}
+	var state legacyNativeSavedState
+	if json.Unmarshal(data, &state) != nil || (state.Schema != 1 && state.Schema != 2) ||
+		state.Server != legacyNativeServer || !validAdapterGUID(state.Adapter.GUID) {
+		return errors.New("сохранённая конфигурация старой версии PrivetDNS повреждена")
+	}
+	family, err := legacyFamily(state.Adapter.Mode, state.Adapter.Servers, 4, true)
+	if err != nil {
+		return err
+	}
+	if err := restoreLegacyIPv4(state.Adapter.GUID, family, state.Server); err != nil {
+		return err
+	}
+	// Native DoH mappings are harmless after DNS restoration, but remove the
+	// exact legacy server mapping when Windows exposes the netsh backend.
+	_, _ = runHidden("netsh.exe", "dnsclient", "delete", "encryption", "server="+state.Server, "protocol=doh")
+	return archiveLegacyDirectory(dir)
+}
+
+func migrateLegacyStub(dir string) error {
+	stateFile := filepath.Join(dir, stateName)
+	data, err := os.ReadFile(stateFile)
+	if err != nil || len(data) == 0 || len(data) > 64*1024 {
+		if taskExistsNamed(legacyStubTaskName) {
+			task, taskErr := readTaskNamed(legacyStubTaskName)
+			if taskErr != nil || !validLegacyPythonPath(strings.TrimSpace(task.Actions.Exec.Command)) ||
+				!strings.Contains(strings.ToLower(task.Actions.Exec.Arguments), strings.ToLower(dir)) ||
+				!strings.EqualFold(strings.TrimSpace(task.Principals.Principal.UserID), "S-1-5-18") {
+				return errors.New("задача старой версии PrivetDNS была изменена; автоматическая миграция остановлена")
+			}
+			if err := deleteTaskNamed(legacyStubTaskName); err != nil {
+				return fmt.Errorf("не удалось удалить автозапуск старой версии PrivetDNS: %w", err)
+			}
+		}
+		if err := resetStaleLegacyIPv4("127.0.0.1"); err != nil {
+			return err
+		}
+		return archiveLegacyDirectory(dir)
+	}
+	var state legacyStubSavedState
+	if json.Unmarshal(data, &state) != nil || state.Schema != 1 || !validAdapterGUID(state.Adapter.GUID) ||
+		!validLegacyPythonPath(state.Python) || !strings.Contains(strings.ToLower(state.TaskArguments), strings.ToLower(dir)) {
+		return errors.New("сохранённая конфигурация старой версии PrivetDNS повреждена")
+	}
+	family, err := legacyFamily(state.Adapter.IPv4Mode, state.Adapter.IPv4Servers, 4, true)
+	if err != nil {
+		return err
+	}
+	if err := restoreLegacyIPv4(state.Adapter.GUID, family, "127.0.0.1"); err != nil {
+		return err
+	}
+	if taskExistsNamed(legacyStubTaskName) {
+		task, taskErr := readTaskNamed(legacyStubTaskName)
+		if taskErr != nil || !strings.EqualFold(strings.TrimSpace(task.Actions.Exec.Command), state.Python) ||
+			strings.TrimSpace(task.Actions.Exec.Arguments) != state.TaskArguments ||
+			!strings.EqualFold(strings.TrimSpace(task.Principals.Principal.UserID), "S-1-5-18") {
+			return errors.New("задача старой версии PrivetDNS была изменена; автоматическая миграция остановлена")
+		}
+		if err := deleteTaskNamed(legacyStubTaskName); err != nil {
+			return fmt.Errorf("не удалось удалить автозапуск старой версии PrivetDNS: %w", err)
+		}
+	}
+	return archiveLegacyDirectory(dir)
+}
+
+func migrateLegacyInstallations(parent string) (int, error) {
+	migrated := 0
+	for _, item := range []struct {
+		name    string
+		migrate func(string) error
+	}{
+		{legacyNativeDirName, migrateLegacyNative},
+		{legacyStubDirName, migrateLegacyStub},
+	} {
+		dir := filepath.Join(parent, item.name)
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return migrated, fmt.Errorf("не удалось проверить старую версию PrivetDNS: %w", err)
+		}
+		if err := item.migrate(dir); err != nil {
+			return migrated, err
+		}
+		migrated++
+	}
+	return migrated, nil
 }
 
 func install(rawURL string) (string, error) {
@@ -701,14 +863,12 @@ func install(rawURL string) (string, error) {
 	if _, err := os.Lstat(dir); err == nil || !errors.Is(err, os.ErrNotExist) || taskExists() || serviceFound {
 		return "", errors.New("PrivetDNS уже установлен или осталась старая установка; нажмите «Удалить», затем повторите")
 	}
-	for _, old := range []string{filepath.Join(filepath.Dir(dir), "PrivetDNS-Native"), filepath.Join(filepath.Dir(dir), "PrivetDNS-Personal-LocalStub")} {
-		if _, err := os.Lstat(old); err == nil {
-			return "", errors.New("найдена старая версия PrivetDNS; сначала удалите её")
-		}
+	if _, err := migrateLegacyInstallations(filepath.Dir(dir)); err != nil {
+		return "", fmt.Errorf("не удалось перенести старую версию PrivetDNS: %w", err)
 	}
-	if hasNRPTPolicy() {
-		return "", errors.New("на компьютере действует корпоративная DNS-политика; безопасная автоматическая установка невозможна")
-	}
+	// NRPT entries can belong to local applications as well as domain policy.
+	// They do not prohibit setting adapter DNS. Preserve them and rely on the
+	// Windows DNS API to report an actual failure to apply the adapter setting.
 	adapter, err := bestPhysicalAdapter()
 	if err != nil {
 		return "", err
@@ -721,32 +881,25 @@ func install(rawURL string) (string, error) {
 	if len(ordinary) == 0 {
 		return "", errors.New("у текущей сети не найден исходный DNS; переподключитесь к Wi-Fi или кабелю и повторите")
 	}
-	if err := checkPorts(original.IPv6Enabled); err != nil {
+	if _, err := parseNRPTDomains(domainsPayload); err != nil {
 		return "", err
 	}
-	domains, err := parseNRPTDomains(domainsPayload)
-	if err != nil {
-		return "", err
-	}
-	rules := plannedNRPTRules(domains)
 	if err := protectDirectory(dir); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
 	installed := false
 	serviceCreated := false
-	rulesCreated := false
+	dns4Changed := false
+	dns6Changed := false
 	defer func() {
 		personalURL = ""
 		if !installed {
-			canRemoveService := true
-			if rulesCreated && deleteNRPTRules(rules) != nil {
-				canRemoveService = false
+			canRemoveFiles := !dns4Changed && !dns6Changed
+			if serviceCreated && canRemoveFiles {
+				canRemoveFiles = stopDeleteService() == nil
 			}
-			if serviceCreated && canRemoveService {
-				_ = stopDeleteService()
-			}
-			if canRemoveService {
+			if canRemoveFiles {
 				_ = os.RemoveAll(dir)
 			}
 		}
@@ -755,7 +908,7 @@ func install(rawURL string) (string, error) {
 	if original.IPv6Enabled {
 		serviceArguments = append(serviceArguments, "--ipv6")
 	}
-	state := savedState{Schema: 4, Adapter: original, ServiceCommand: runtimeFile, ServiceArguments: serviceArguments, NRPTRules: rules}
+	state := savedState{Schema: 5, Adapter: original, ServiceCommand: runtimeFile, ServiceArguments: serviceArguments}
 	stateData, _ := json.Marshal(state)
 	configData, _ := json.Marshal(map[string]any{
 		"doh_url": personalURL, "bootstrap_ips": []string{"31.76.244.138", "31.76.30.138"},
@@ -778,51 +931,40 @@ func install(rawURL string) (string, error) {
 		return "", err
 	}
 	serviceCreated = true
-	cleanup := func(cause error) (string, error) {
-		if rulesCreated {
-			if cleanupErr := deleteNRPTRules(rules); cleanupErr != nil {
-				return "", fmt.Errorf("%w; правила Windows не удалось удалить, служба оставлена включённой: %v", cause, cleanupErr)
+	rollback := func(cause error) (string, error) {
+		var restoreErr error
+		if dns4Changed {
+			if err := setDNSForAdapter(original, false, original.IPv4); err != nil {
+				restoreErr = err
+			} else {
+				dns4Changed = false
 			}
-			rulesCreated = false
 		}
-		cleanupErr := stopDeleteService()
-		if cleanupErr == nil {
-			serviceCreated = false
-			cleanupErr = os.RemoveAll(dir)
+		if dns6Changed {
+			if err := setDNSForAdapter(original, true, original.IPv6); err != nil {
+				restoreErr = err
+			} else {
+				dns6Changed = false
+			}
 		}
-		if cleanupErr != nil {
-			return "", fmt.Errorf("%w; не удалось полностью убрать временную установку: %v", cause, cleanupErr)
+		if restoreErr != nil {
+			return "", fmt.Errorf("%w; прежний DNS не удалось восстановить: %v. Файлы восстановления сохранены", cause, restoreErr)
 		}
 		return "", cause
 	}
-	if err := waitForBridge(); err != nil {
-		return cleanup(fmt.Errorf("DNS-модуль не прошёл проверку, настройки Windows не изменены: %w", err))
+	if original.IPv6Enabled {
+		dns6Changed = true
+		if err := setLoopbackForAdapter(original, true); err != nil {
+			return rollback(err)
+		}
 	}
-	currentInfo, err := adapterByGUID(original.GUID)
-	if err != nil {
-		return cleanup(err)
+	dns4Changed = true
+	if err := setLoopbackForAdapter(original, false); err != nil {
+		return rollback(err)
 	}
-	current, err := snapshot(currentInfo)
-	if err != nil || !sameFamily(current.IPv4, original.IPv4) || !sameFamily(current.IPv6, original.IPv6) {
-		return cleanup(errors.New("DNS сети изменился во время установки; установка безопасно отменена"))
-	}
-	if err := installNRPTRules(domains, rules); err != nil {
-		return cleanup(err)
-	}
-	rulesCreated = true
-	if err := waitForSystemBridge(); err != nil {
-		return cleanup(fmt.Errorf("Windows не применила выборочные правила DNS: %w", err))
-	}
-	unchangedInfo, err := adapterByGUID(original.GUID)
-	if err != nil {
-		return cleanup(err)
-	}
-	unchanged, err := snapshot(unchangedInfo)
-	if err != nil || !sameFamily(unchanged.IPv4, original.IPv4) || !sameFamily(unchanged.IPv6, original.IPv6) {
-		return cleanup(errors.New("проверка неизменности DNS сети не пройдена; установка отменена"))
-	}
+	flushDNS()
 	installed = true
-	return "PrivetDNS установлен. DNS подключения «" + original.Name + "» не изменён; только поддерживаемые сервисы используют Smart DNS.", nil
+	return "PrivetDNS установлен для подключения «" + original.Name + "».", nil
 }
 
 func uninstall() (string, error) {
@@ -835,6 +977,23 @@ func uninstall() (string, error) {
 	}
 	data, err := os.ReadFile(stateFile)
 	if err != nil || len(data) > 64*1024 {
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			return "", errors.New("сохранённая конфигурация PrivetDNS повреждена; автоматическое удаление остановлено")
+		}
+		recovered, recoverErr := recoverOrphanedInstall(dir, stateFile, configFile, runtimeFile)
+		if recoverErr != nil {
+			return "", recoverErr
+		}
+		if recovered {
+			return "Остатки установки PrivetDNS убраны. Теперь можно установить заново.", nil
+		}
+		migrated, migrateErr := migrateLegacyInstallations(filepath.Dir(dir))
+		if migrateErr != nil {
+			return "", migrateErr
+		}
+		if migrated != 0 {
+			return "Старая версия PrivetDNS удалена. Прежние настройки DNS восстановлены.", nil
+		}
 		return "", errors.New("сохранённая конфигурация PrivetDNS не найдена")
 	}
 	var state savedState
@@ -852,7 +1011,7 @@ func uninstall() (string, error) {
 	}
 	legacyTask := (state.Schema == 1 || state.Schema == 2) && strings.EqualFold(state.TaskCommand, runtimeFile)
 	nrptService := state.Schema == 4 && strings.EqualFold(state.ServiceCommand, runtimeFile) && len(state.ServiceArguments) >= 5 && len(state.NRPTRules) != 0
-	currentService := (state.Schema == 3 || nrptService) && strings.EqualFold(state.ServiceCommand, runtimeFile) && len(state.ServiceArguments) >= 5
+	currentService := (state.Schema == 3 || state.Schema == 5 || nrptService) && strings.EqualFold(state.ServiceCommand, runtimeFile) && len(state.ServiceArguments) >= 5
 	if !legacyTask && !currentService {
 		return "", errors.New("сохранённая конфигурация PrivetDNS повреждена")
 	}
@@ -1064,7 +1223,7 @@ func beginOperation(remove bool) {
 	}
 	uiBusy = true
 	enableControls(false)
-	setText(statusControl, "Подождите, Windows проверяет сеть и настройки DNS…")
+	setText(statusControl, "Установка DNS…")
 	raw := ""
 	if !remove {
 		raw = getText(editControl)
@@ -1089,15 +1248,13 @@ func beginOperation(remove bool) {
 func windowProc(hwnd windows.Handle, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case wmCreate:
-		createControl("STATIC", "privetdns  /  CONNECT", wsChild|wsVisible, 28, 22, 520, 25, hwnd, 0)
-		createControl("STATIC", "Нужные домены. Ваше подключение.", wsChild|wsVisible, 28, 57, 550, 31, hwnd, 0)
-		createControl("STATIC", "Вставьте личную DoH-ссылку из карточки Windows-устройства. Выбранные сервисы будут работать через PrivetDNS. Остальные сайты сохранят DNS вашей сети.", wsChild|wsVisible, 28, 99, 540, 53, hwnd, 0)
-		createControl("STATIC", "ЛИЧНАЯ DOH-ССЫЛКА", wsChild|wsVisible, 28, 164, 500, 20, hwnd, 0)
-		editControl = createControl("EDIT", "", wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll|esPassword, 28, 188, 540, 34, hwnd, idEdit)
-		showControl = createControl("BUTTON", "Показать ссылку", wsChild|wsVisible|wsTabStop|bsAutoCheckbox, 28, 231, 180, 25, hwnd, idShow)
-		installButton = createControl("BUTTON", "Подключить  ↗", wsChild|wsVisible|wsTabStop|bsPushButton, 28, 275, 175, 42, hwnd, idInstall)
-		removeButton = createControl("BUTTON", "Отключить и восстановить DNS", wsChild|wsVisible|wsTabStop|bsPushButton, 216, 275, 250, 42, hwnd, idRemove)
-		statusControl = createControl("STATIC", "Готово к подключению · Windows 10/11 · Python и PowerShell не нужны", wsChild|wsVisible, 28, 333, 540, 48, hwnd, 0)
+		createControl("STATIC", "PrivetDNS для Windows · версия "+setupVersion, wsChild|wsVisible, 24, 18, 490, 28, hwnd, 0)
+		createControl("STATIC", "Вставьте персональную DoH-ссылку из карточки устройства.", wsChild|wsVisible, 24, 52, 490, 52, hwnd, 0)
+		editControl = createControl("EDIT", "", wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll|esPassword, 24, 112, 490, 28, hwnd, idEdit)
+		showControl = createControl("BUTTON", "Показать ссылку", wsChild|wsVisible|wsTabStop|bsAutoCheckbox, 24, 146, 180, 24, hwnd, idShow)
+		installButton = createControl("BUTTON", "Установить", wsChild|wsVisible|wsTabStop|bsPushButton, 24, 184, 150, 38, hwnd, idInstall)
+		removeButton = createControl("BUTTON", "Удалить PrivetDNS", wsChild|wsVisible|wsTabStop|bsPushButton, 188, 184, 210, 38, hwnd, idRemove)
+		statusControl = createControl("STATIC", "Готово к установке.", wsChild|wsVisible, 24, 236, 490, 44, hwnd, 0)
 		if autoRemove {
 			procPostMessage.Call(uintptr(hwnd), wmAppAutoRemove, 0, 0)
 		}
@@ -1128,7 +1285,7 @@ func windowProc(hwnd windows.Handle, msg uint32, wParam, lParam uintptr) uintptr
 		uiBusy = false
 		enableControls(true)
 		if err != nil {
-			setText(statusControl, "Операция не выполнена. Настройки не менялись либо были восстановлены.")
+			setText(statusControl, "Установка не завершена.")
 			procMessageBox.Call(uintptr(hwnd), uintptr(unsafe.Pointer(utf16(err.Error()))), uintptr(unsafe.Pointer(utf16("PrivetDNS — ошибка"))), mbOK|mbIconError)
 		} else {
 			setText(statusControl, text)
@@ -1188,11 +1345,11 @@ func runUI() error {
 	if registered == 0 {
 		return registerErr
 	}
-	width, height := int32(610), int32(435)
+	width, height := int32(560), int32(340)
 	screenW, _, _ := procGetSystemMetrics.Call(0)
 	screenH, _, _ := procGetSystemMetrics.Call(1)
 	x, y := (int32(screenW)-width)/2, (int32(screenH)-height)/2
-	hwnd, _, createErr := procCreateWindowEx.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(utf16("PrivetDNS Connect"))), wsOverlappedWindow,
+	hwnd, _, createErr := procCreateWindowEx.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(utf16("PrivetDNS — установка"))), wsOverlappedWindow,
 		uintptr(x), uintptr(y), uintptr(width), uintptr(height), 0, 0, instance, 0)
 	if hwnd == 0 {
 		return createErr

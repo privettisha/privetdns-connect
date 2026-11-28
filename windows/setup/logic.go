@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"regexp"
@@ -142,6 +143,24 @@ func normalizeServers(values []string, family int) []string {
 
 func normalizeAdapterServers(values []string, family int) []string {
 	return normalizeIPList(values, family, true)
+}
+
+func splitServers(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == ' ' || r == '\t' })
+}
+
+func snapshotDNSFamily(static string, observed []string, family int, enabled bool) (dnsFamilyState, error) {
+	if strings.TrimSpace(static) == "" {
+		return dnsFamilyState{Mode: "automatic", Servers: observed}, nil
+	}
+	// A snapshot describes adapter settings, including our own loopback DNS.
+	// The upstream resolver filter deliberately rejects loopback and must not
+	// be used here: otherwise uninstall aborts before restoring the saved DNS.
+	servers := normalizeAdapterServers(splitServers(static), family)
+	if len(servers) == 0 && enabled {
+		return dnsFamilyState{}, fmt.Errorf("статический IPv%d DNS настроен некорректно", family)
+	}
+	return dnsFamilyState{Mode: "static", Servers: servers}, nil
 }
 
 func ordinaryResolvers(ipv4, ipv6 []string) []string {
